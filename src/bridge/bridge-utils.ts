@@ -942,7 +942,7 @@ export function sanitizeWechatFinalReplyText(
 ): string {
   const normalized = cleanupVisibleWechatReplyText(text);
   if (!normalized || adapter !== "opencode") {
-    return normalized;
+    return formatWechatTextForMobile(normalized);
   }
 
   const keptLines: string[] = [];
@@ -996,11 +996,118 @@ export function sanitizeWechatFinalReplyText(
 
   const cleaned = cleanupVisibleWechatReplyText(keptLines.join("\n"));
   if (!sawDroppedMeta) {
-    return cleaned;
+    return formatWechatTextForMobile(cleaned);
   }
 
   const tail = cleanupVisibleWechatReplyText(keptLines.slice(tailStartIndex).join("\n"));
-  return tail || cleaned;
+  return formatWechatTextForMobile(tail || cleaned);
+}
+
+const WECHAT_LIST_ITEM_RE = /^\s*(?:[-*•]\s+|\d+[.)]\s+)/;
+const WECHAT_PRESERVE_LINE_RE = /^(?:```|~~~|[#>]|[-*]{3,}\s*$|\|.*\|$)/;
+
+function formatWechatTextForMobile(text: string): string {
+  if (!text) {
+    return text;
+  }
+
+  const output: string[] = [];
+  let previousWasBlock = false;
+
+  const pushBlankLine = () => {
+    if (output.length > 0 && output[output.length - 1] !== "") {
+      output.push("");
+    }
+  };
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) {
+      pushBlankLine();
+      previousWasBlock = false;
+      continue;
+    }
+
+    if (WECHAT_PRESERVE_LINE_RE.test(line) || /`/.test(line)) {
+      output.push(line);
+      previousWasBlock = false;
+      continue;
+    }
+
+    const listMatch = WECHAT_LIST_ITEM_RE.exec(line);
+    if (listMatch) {
+      const blockLines = splitWechatListItem(line.slice(listMatch[0].length));
+      if (previousWasBlock) {
+        pushBlankLine();
+      }
+      output.push(...blockLines);
+      previousWasBlock = true;
+      continue;
+    }
+
+    if (shouldSplitWechatLine(line)) {
+      if (previousWasBlock) {
+        pushBlankLine();
+      }
+      output.push(...splitWechatClauses(line));
+      previousWasBlock = true;
+      continue;
+    }
+
+    output.push(line);
+    previousWasBlock = false;
+  }
+
+  return cleanupVisibleWechatReplyText(output.join("\n"));
+}
+
+function splitWechatListItem(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const headingMatch = /^([^：:]{1,20})[：:]\s*(.+)$/.exec(normalized);
+  if (!headingMatch) {
+    return splitWechatClauses(normalized);
+  }
+
+  const [, heading, rest] = headingMatch;
+  return [heading.trim(), ...splitWechatClauses(rest)];
+}
+
+function shouldSplitWechatLine(line: string): boolean {
+  if (line.length < 20) {
+    return false;
+  }
+  if (line.endsWith("：") || line.endsWith(":")) {
+    return false;
+  }
+  if (!/[，；。]/.test(line)) {
+    return false;
+  }
+  if (/https?:\/\//i.test(line) || /[A-Za-z]:\\/.test(line)) {
+    return false;
+  }
+  return true;
+}
+
+function splitWechatClauses(text: string): string[] {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return [];
+  }
+
+  const parts = compact
+    .split(/[，；。]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 1) {
+    return [compact];
+  }
+
+  return parts;
 }
 
 function extractInlineWechatAttachments(text: string): ParsedWechatFinalReply {
